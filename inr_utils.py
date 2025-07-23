@@ -1,10 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset
-from pytorch3d.io import load_obj
-from mesh_errors import sample_points_on_mesh, get_face_areas
-from copy import deepcopy
 import numpy as np
 
 class PE(nn.Module):
@@ -65,48 +61,3 @@ class MLP(nn.Module):
             except:
                 print(f"Error reading {name}")
                 breakpoint()
-
-
-class CoarseDataset(Dataset):
-    def __init__(self, mesh_name, batch_size=2048):
-        embedding_path = f'remeshed/{mesh_name}/embedding.obj'
-        normalized_path = f'remeshed/{mesh_name}/input_normalized.obj'
-        self.embedding, embedding_faces, _ = load_obj(embedding_path, load_textures=False, device="cpu")
-        self.normalized, normalized_faces, _ = load_obj(normalized_path, load_textures=False, device="cpu")
-        self.embedding_faces = embedding_faces.verts_idx
-        self.normalized_faces = normalized_faces.verts_idx
-        self.batch_size = batch_size
-    def __len__(self):
-        return 100
-    def __getitem__(self, idx):
-        sampled_pts, sampled_f, bcs = sample_points_on_mesh(self.embedding, self.embedding_faces, self.batch_size)
-        svf = self.normalized[sampled_f]
-        sampled_targets = svf[:,0,:]*bcs[0] + svf[:,1,:]*bcs[1] + svf[:,2,:]*bcs[2]
-        return sampled_pts, sampled_targets
-
-class FineDataset(Dataset):
-    def __init__(self, coarse_dataset, coarse_model, batch_size=2024, scale=1.0):
-        self.coarse_dataset = coarse_dataset
-        with torch.no_grad():
-            try:
-                coarse_reconstruction = coarse_model(self.coarse_dataset.embedding.cuda())
-            except:
-                emb_chunks = torch.chunk(self.coarse_dataset.embedding, 100, dim=0)
-                coarse_reconstruction = torch.cat([coarse_model(emb.cuda()) for emb in emb_chunks], dim=0)
-        self.prior = get_face_areas(coarse_reconstruction, self.coarse_dataset.embedding_faces.cuda())
-        self.prior = F.normalize(self.prior, dim=0, p=1).cpu()
-        self.coarse_model = deepcopy(coarse_model).cpu()
-        self.scale = scale
-        self.batch_size = batch_size
-    def __len__(self):
-        return 100
-    def __getitem__(self, idx):
-        sampled_pts, sampled_f, bcs = sample_points_on_mesh(self.coarse_dataset.embedding, 
-                            self.coarse_dataset.embedding_faces, 
-                            self.batch_size, self.prior)
-        with torch.no_grad():
-            sampled_coarse = self.coarse_model(sampled_pts)
-        sfv = self.coarse_dataset.normalized[sampled_f]
-        sampled_targets = sfv[:,0,:]*bcs[0] + sfv[:,1,:]*bcs[1] + sfv[:,2,:]*bcs[2]
-        return sampled_coarse, (sampled_targets-sampled_coarse)*self.scale
-
