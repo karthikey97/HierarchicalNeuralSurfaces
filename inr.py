@@ -8,6 +8,7 @@ from pytorch3d.utils import ico_sphere
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from mesh_errors import point2mesh_error
+from reconstruct import reconstruct
 import os
 
 def parse_args():
@@ -83,6 +84,7 @@ if __name__=="__main__":
     cs = coarse_model(icv)
     lowest_error = 500000000
 
+    total_error = 10.00
     pbar = tqdm(total=args.fine_epochs, ncols=150)
     for epoch in range(args.fine_epochs):
         fine_model.train()
@@ -110,27 +112,28 @@ if __name__=="__main__":
             r2t = point2mesh_error(reconstructed, coarse_dataset.normalized.cuda(), coarse_dataset.normalized_faces.cuda(), scale=1e4)*1e4
             t2r = point2mesh_error(coarse_dataset.normalized.cuda(), reconstructed, icf, scale=1e4)*1e4
             total_error = r2t + t2r
-            tqdm.write(f"Total error: {total_error:.2f}, r2t: {r2t:.2f}, t2r: {t2r:.2f}")
             if total_error < lowest_error:
                 lowest_error = total_error
                 torch.save(fine_model.state_dict(), f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.pth')
             torch.cuda.empty_cache()
         pbar.update(1)
-        pbar.set_description(f'Epoch {epoch+1}/{args.fine_epochs} Loss: {epoch_loss:.4f}')
+        pbar.set_description(f'Epoch {epoch+1}/{args.fine_epochs} Loss: {epoch_loss:.4f} Total error: {total_error:.2f}')
     pbar.close()
     fine_model.load_state_dict(torch.load(f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.pth'))
-    with torch.no_grad():
-        displacements = fine_model(cs)
-        reconstructed = cs + displacements/args.scale
-        r2t = point2mesh_error(reconstructed, coarse_dataset.normalized.cuda(), coarse_dataset.normalized_faces.cuda(), scale=1e4)*1e4
-        t2r = point2mesh_error(coarse_dataset.normalized.cuda(), reconstructed, icf, scale=1e4)*1e4
-        total_error = r2t + t2r
-        print(f"Total error: {total_error:.2f}, r2t: {r2t:.2f}, t2r: {t2r:.2f}")
-        save_obj(f'remeshed/{args.mesh_name}/reconstruction_{args.hidden_dim}_{args.num_layers}.obj', reconstructed, icf)
-        print(f'Saved reconstruction to "remeshed/{args.mesh_name}/reconstruction_{args.hidden_dim}_{args.num_layers}.obj"')
-    coarse_model = coarse_model.half().float()
+
+    reconstructed, icf = reconstruct(coarse_model, fine_model, args.icosphere_level)
+
+
+    r2t = point2mesh_error(reconstructed, coarse_dataset.normalized.cuda(), coarse_dataset.normalized_faces.cuda(), scale=1e4)*1e4
+    t2r = point2mesh_error(coarse_dataset.normalized.cuda(), reconstructed, icf, scale=1e4)*1e4
+    total_error = r2t + t2r
+    print(f"Total error: {total_error:.2f}, r2t: {r2t:.2f}, t2r: {t2r:.2f}")
+    save_obj(f'remeshed/{args.mesh_name}/reconstruction_{args.hidden_dim}_{args.num_layers}.obj', reconstructed, icf)
+    print(f'Saved reconstruction to "remeshed/{args.mesh_name}/reconstruction_{args.hidden_dim}_{args.num_layers}.obj"')
+
+    coarse_model = coarse_model.half()
     coarse_size = coarse_model.serialize_params(f'remeshed/{args.mesh_name}/coarse_weights.bin')/1024
-    fine_model = fine_model.half().float()
+    fine_model = fine_model.half()
     fine_size = fine_model.serialize_params(f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.bin')/1024
     print(f"Compressed size: {coarse_size+fine_size:.2f} KB")
 

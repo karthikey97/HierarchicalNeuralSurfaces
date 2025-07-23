@@ -35,42 +35,48 @@ def subdivide(v, f, mask=None):
     new_f = torch.cat([unaffected_f, new_f0, new_f1, new_f2, faces_as_edge_idxs], dim=0)
     return new_v, new_f
 
-if __name__=="__main__":
-    args = parse_args()
-    print(f"Loading coarse model from {f'remeshed/{args.mesh_name}/coarse_weights.pth'}")
-    coarse_model = MLP(input_dim=3, hidden_dim=20, output_dim=3, num_layers=12, pe_dim=0).cuda()
-    coarse_weights = f'remeshed/{args.mesh_name}/coarse_weights.pth'
-    coarse_model.load_state_dict(torch.load(coarse_weights))
-    coarse_model.eval()
-
-    print(f"Loading fine model from {f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.pth'}")
-    fine_model = MLP(input_dim=3, hidden_dim=args.hidden_dim, output_dim=3, num_layers=args.num_layers, pe_dim=args.pe_dim).cuda()
-    fine_weights = f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.pth'
-    fine_model.load_state_dict(torch.load(fine_weights))
-    fine_model.eval()
-    
-    ics = ico_sphere(args.icosphere_level, device="cuda:0")
+def reconstruct(coarse_model, fine_model, icosphere_level):
+    coarse_model = coarse_model.half().float()
+    fine_model = fine_model.half().float()
+    ics = ico_sphere(icosphere_level, device="cuda:0")
     icv = ics.verts_packed()
     icf = ics.faces_packed()
-    print(f"Decoding model...")
 
+    coarse_model.eval()
+    fine_model.eval()
+    print(f"Decoding model...")
     start_time = time.time()
-    cs = coarse_model(icv)
-    while True:
-        coarse_face_areas = get_face_areas(cs, icf)
-        th = torch.quantile(coarse_face_areas, 0.5) * 4.0
-        mask = (coarse_face_areas > th)
-        if mask.sum() == 0:
-            break
-        icv, icf = subdivide(icv, icf, mask)
+    with torch.no_grad():
         cs = coarse_model(icv)
-    displacements = fine_model(cs)
-    reconstructed = cs + displacements/1414
+        while True:
+            coarse_face_areas = get_face_areas(cs, icf)
+            th = torch.quantile(coarse_face_areas, 0.5) * 4.0
+            mask = (coarse_face_areas > th)
+            if mask.sum() == 0:
+                break
+            icv, icf = subdivide(icv, icf, mask)
+            cs = coarse_model(icv)  
+        displacements = fine_model(cs)
+        reconstructed = cs + displacements/1414
     total_time = time.time() - start_time
     print(f"Reconstruction complete in {total_time:.2f} seconds")
+    return reconstructed, icf
 
-    del coarse_model, fine_model, icv, cs, displacements
-    torch.cuda.empty_cache()
+if __name__=="__main__":
+    args = parse_args()
+    print(f"Loading coarse model from {f'remeshed/{args.mesh_name}/coarse_weights.bin'}")
+    coarse_model = MLP(input_dim=3, hidden_dim=20, output_dim=3, num_layers=12, pe_dim=0).cuda()
+    coarse_weights = f'remeshed/{args.mesh_name}/coarse_weights.bin'
+    coarse_model.read_from_bin(coarse_weights, read_type="float16")
+    coarse_model.eval()
+
+    print(f"Loading fine model from {f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.bin'}")
+    fine_model = MLP(input_dim=3, hidden_dim=args.hidden_dim, output_dim=3, num_layers=args.num_layers, pe_dim=args.pe_dim).cuda()
+    fine_weights = f'remeshed/{args.mesh_name}/fine_weights_{args.hidden_dim}_{args.num_layers}.bin'
+    fine_model.read_from_bin(fine_weights, read_type="float16")
+    fine_model.eval()
+    
+    reconstructed, icf = reconstruct(coarse_model, fine_model, args.icosphere_level)
 
     print("Calculating reconstruction error...")
     ov, of, _ = load_obj(f'remeshed/{args.mesh_name}/input_normalized.obj', load_textures=False, device="cuda:0")
