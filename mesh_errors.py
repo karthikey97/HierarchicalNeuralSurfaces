@@ -1,8 +1,6 @@
 import torch
 import torch.nn.functional as F
 from pytorch3d._C import point_face_dist_forward
-from pytorch3d.structures import Meshes
-from math import pi
 
 def get_face_areas(v,f):
     f_norms = torch.cross(v[f[:,0]]-v[f[:,1]], v[f[:,0]]-v[f[:,2]], dim=1)
@@ -41,25 +39,3 @@ def point2mesh_error(dv, ov, of, scale = 1.0):
     dists, idxs = point_face_dist_forward(dpcl, i1, ov[of], i1, dpcl.size(0), min_area)
     errors = torch.sqrt(dists)
     return errors.mean()/scale
-
-
-def find_closest_points(ov, of, pts):
-    i1 = torch.LongTensor([0]).to(ov.device)
-    ov*=1e4
-    min_area = torch.min(get_face_areas(ov,of)).item()
-    pts*=1e4
-    _, idxs = point_face_dist_forward(pts, i1, ov[of], i1, pts.size(0), min_area)
-    closest_faces = of[idxs]
-    closest_fnorms = torch.cross(ov[closest_faces[:,0]]-ov[closest_faces[:,1]], 
-                                 ov[closest_faces[:,0]]-ov[closest_faces[:,2]], dim=1)
-    norm_consts = torch.sum(closest_fnorms**2, dim=1) **0.5
-    closest_fnorms /= norm_consts[:,None]
-    vec_to_closest = ov[closest_faces[:,0]] - pts
-    distances = (vec_to_closest*closest_fnorms).sum(dim=1, keepdim=True)
-    displacements = (distances*closest_fnorms)/1e4
-    ov/=1e4
-    pts/=1e4
-    return displacements+pts
-
-
-
