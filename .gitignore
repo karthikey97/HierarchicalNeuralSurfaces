@@ -1,0 +1,10 @@
+__pycache__/
+*.ply
+*.pth
+*.bin
+*.obj
+*.txt
+*.png
+*.jpg
+*.jpeg
+
